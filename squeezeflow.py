@@ -1,10 +1,10 @@
 from nutils import cli, mesh, function, solver, export, types
-import numpy, treelog, typing
+import numpy, treelog, typing, pandas
 
 unit = types.unit(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min')
 _ = numpy.newaxis
 
-def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m'], h0:unit['m'], F:unit['g'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int):
+def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m'], h0:unit['m'], F:unit['g'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int):
 
     '''
     Radial squeeze flow of a Carreau fluid
@@ -29,16 +29,19 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
        h0 [1mm]
          Initial height of fluid domain
 
-       F [1kg]
+       F [1.0kg]
          Loading
 
        T [30s]
          Final time
 
-       m [10]
+       m [20]
          Number of (radial) elements
 
-       nt [10]
+       ratio [100]
+         Ratio between largest and smallest time step
+
+       nt [20]
          Number of time steps
 
        npicard [50]
@@ -58,9 +61,11 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
        newtonian
          nu=1
          l=0s
-    '''
+         mu0=1.4Pa*s
+         muinf=1.4Pa*s
 
-    Rinit    = R0
+ '''
+ 
     pdegree  = urdegree-1
 
     ρdomain, ρgeom = mesh.line(numpy.linspace(0, 1, m+1), bnames=('inner','outer'), space='R')
@@ -69,6 +74,8 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     domain = ρdomain*ζdomain
 
     ns = function.Namespace()
+    pp = PostProcessing(ρdomain, ζdomain, ns, h0, R0)
+
     ns.hbasis = [1.]
     ns.h  = function.dotarg('h' ,ns.hbasis)
     ns.h0 = function.dotarg('h0',ns.hbasis)
@@ -111,9 +118,8 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     pres = sample.integral('pbasis_n (-(u r)_,0 - r (δh / h0)) d:x' @ ns)
     hres = domain.boundary['top'].integral('hbasis_n ((F / (?R0^2)) - π p) r d:x' @ ns, degree=2*urdegree)
 
-    Δtsteps = numpy.power(2,range(nt))
+    Δtsteps = numpy.power(ratio**(1/(nt-1)),range(nt))
     Δtsteps = (T/Δtsteps.sum())*Δtsteps
-    Rsteps  = numpy.empty_like(Δtsteps)
     with treelog.iter.plain('timestep',range(nt)) as steps:
         for step in steps:
 
@@ -121,7 +127,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
 
             with treelog.iter.plain('picard',range(npicard)) as iterations:
                 for iteration in iterations:
-                    args = dict(upicard=upicard,h0=[h0],R0=R0,Δt=Δt)
+                    args = dict(upicard=upicard,h0=[h0],R0=R0,Δt=Δt,t=Δtsteps[:step+1].sum())
                     state = solver.solve_linear(('u', 'p', 'h'), (ures, pres, hres), constrain=dict(u=ucons), arguments=args)
                     state.update(args)
 
@@ -137,71 +143,97 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
                 else:
                     raise RuntimeError('Picard solver did not converge in {} iterations'.format(npicard))  
 
-            postprocess(ρdomain, ζdomain, domain, ns, state)
+            #update the radius
+            state['R'] = numpy.sqrt(state['h0'][0]/state['h'][0])*R0
 
-            Δh = state['h'][0]-state['h0'][0]
-            ΔR = -Δh*(R0/h0)
+            # plot the results
+            pp.plot(state)
 
-            h0 += Δh
-            R0 += ΔR
+            # set initial values for th next step
+            R0 = state['R']
+            h0 = state['h'][0]
 
-            Rsteps[step] = R0
+class PostProcessing:
 
-            treelog.user('Δh = {}'.format(Δh))
-            treelog.user('h  = {}'.format(h0))
-            treelog.user('ΔR = {}'.format(ΔR))
-            treelog.user('R  = {}'.format(R0))
+    def __init__(self, ρdomain, ζdomain, ns, h0, R0, npointsρ=6, npointsζ=20):
+        self.interior   = ρdomain.sample('bezier', npointsρ)*ζdomain.sample('bezier', npointsζ)
+        self.centerline = ζdomain.sample('uniform',1)*ρdomain.sample('bezier',npointsρ)
+        self.profile    = ρdomain.sample('uniform',1)*ζdomain.sample('bezier',npointsζ)
+        self.npointsζ   = npointsζ
+        self.ns         = ns
+        self.df         = pandas.DataFrame({'t':[0.], 'h':[h0], 'R':[R0]})
 
-            with export.mplfigure('radius.png') as fig:
-                ax = fig.subplots(2,1)
-                ax[0].plot(Δtsteps[:step+1].cumsum(), Rsteps[:step+1])
-                ax[0].grid()
-                ax[1].loglog(Δtsteps[:step+1].cumsum(), Rsteps[:step+1]-Rinit)
-                ax[1].grid()
+    def plot(self, state):
 
-def postprocess(ρdomain, ζdomain, domain, ns, state):
+        ns = self.ns.copy_() # copy namespace so that we don't modify the calling argument
 
-    ns = ns.copy_() # copy namespace so that we don't modify the calling argument
+        # field plots
+        x, μeff, u, p = self.interior.eval(['x_i', 'μeff', 'u', 'p'] @ ns, **state)
 
-    bezier = domain.sample('bezier', 9)
-    x, μeff, u, p = bezier.eval(['x_i', 'μeff', 'u', 'p'] @ ns, **state)
+        with export.mplfigure('viscosity.png') as fig:
+          ax = fig.subplots(1,1)
+          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, μeff, shading='gouraud', cmap='jet')
+          fig.colorbar(im)
 
-    with export.mplfigure('viscosity.png') as fig:
-      ax = fig.subplots(1,1)
-      im = ax.tripcolor(x[:,0], x[:,1], bezier.tri, μeff, shading='gouraud', cmap='jet')
-      fig.colorbar(im)
+        with export.mplfigure('velocity.png') as fig:
+          ax = fig.subplots(1,1)
+          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, u, shading='gouraud', cmap='jet')
+          fig.colorbar(im)
 
-    with export.mplfigure('velocity.png') as fig:
-      ax = fig.subplots(1,1)
-      im = ax.tripcolor(x[:,0], x[:,1], bezier.tri, u, shading='gouraud', cmap='jet')
-      fig.colorbar(im)
+        with export.mplfigure('pressure.png') as fig:
+          ax = fig.subplots(1,1)
+          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, p, shading='gouraud', cmap='jet')
+          fig.colorbar(im)
 
-    with export.mplfigure('pressure.png') as fig:
-      ax = fig.subplots(1,1)
-      im = ax.tripcolor(x[:,0], x[:,1], bezier.tri, p, shading='gouraud', cmap='jet')
-      fig.colorbar(im)
+        # centerline plot
+        r, u, p = self.centerline.eval(['r', 'u', 'p'] @ ns, **state)
 
-    # centerline plot
-    centerline = ζdomain.sample('uniform',1)*ρdomain.sample('bezier',5) 
-    r, u, p = centerline.eval(['r', 'u', 'p'] @ ns, **state)
+        with export.mplfigure('centerline.png') as fig:
+          ax = fig.subplots(2,1)
+          ax[0].plot(r, u, label='FE')
+          ax[0].set_ylabel('u')
+          ax[0].legend()
+          ax[1].plot(r, p, label='FE')
+          ax[1].set_ylabel('p')
+          ax[1].legend()
 
-    with export.mplfigure('centerline.png') as fig:
-      ax = fig.subplots(2,1)
-      ax[0].plot(r, u, label='FE')
-      ax[0].set_ylabel('u')
-      ax[0].legend()
-      ax[1].plot(r, p, label='FE')
-      ax[1].set_ylabel('p')
-      ax[1].legend()
+        # profile plot
+        z, u, p = self.profile.eval(['z', 'u', 'p'] @ ns, **state)
 
-    # profiles plot
-    npoints = 20
-    profiles = ρdomain.sample('uniform',1)*ζdomain.sample('bezier',npoints)
-    z, u, p = profiles.eval(['z', 'u', 'p'] @ ns, **state)
+        with export.mplfigure('profiles.png') as fig:
+          ax = fig.subplots(2,1)
+          ax[0].plot(u.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
+          ax[1].plot(p.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
 
-    with export.mplfigure('profiles.png') as fig:
-      ax = fig.subplots(2,1)
-      ax[0].plot(u.reshape(-1,npoints).T, z.reshape(-1,npoints).T)
-      ax[1].plot(p.reshape(-1,npoints).T, z.reshape(-1,npoints).T)
+        # time plots
+        self.df = self.df.append({'t':state['t'], 'h':state['h'][0], 'R':state['R']}, ignore_index=True)
+
+        t_ana = numpy.linspace(0,self.df['t'].max(),100)
+        h0 = self.df['h'][0]
+        R0 = self.df['R'][0]
+
+
+        F  = ns.F.eval()
+        μ0 = ns.μ0.eval()
+        h_ana = h0*(1 + (8*F*h0**2)/(3*numpy.pi*μ0*(R0**4))*t_ana)**(-1/4)
+        R_ana = R0*numpy.sqrt(h0/h_ana)
+
+        with export.mplfigure('radius.png') as fig:
+            ax = fig.subplots(1,1)
+            ax.plot(self.df['t'], self.df['R'], '.-', label='FE')
+            ax.plot(t_ana, R_ana, ':', label='analytical (Newtonian)')
+            ax.set_xlabel('t')
+            ax.set_ylabel('R')
+            ax.grid()
+            ax.legend()
+
+        with export.mplfigure('height.png') as fig:
+            ax = fig.subplots(1,1)
+            ax.plot(self.df['t'], self.df['h'], '.-', label='FE')
+            ax.plot(t_ana, h_ana, ':', label='analytical (Newtonian)')
+            ax.set_xlabel('t')
+            ax.set_ylabel('h')
+            ax.grid()
+            ax.legend()
 
 cli.run(main)
