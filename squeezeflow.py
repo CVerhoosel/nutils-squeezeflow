@@ -41,7 +41,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
        ratio [100]
          Ratio between largest and smallest time step
 
-       nt [20]
+       nt [40]
          Number of time steps
 
        npicard [50]
@@ -82,8 +82,8 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     ns.δh = '(h - h0) / ?Δt'
     ns.ρ  = ρgeom
     ns.ζ  = ζgeom
-    ns.r  = 'ρ ?R0'
-    ns.z  = 'h0 ζ'
+    ns.r  = 'ρ ?Rpicard'
+    ns.z  = '?hpicard ζ'
     ns.x  = function.stack([ns.r,ns.z])
 
     urbasis = ρdomain.basis('std', degree=urdegree)
@@ -97,12 +97,13 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     ns.p = function.dotarg('p', ns.pbasis)
 
     usqr    = domain.boundary['inner,top,bottom'].integral('u^2 d:x' @ ns, degree=2*uzdegree)
-    ucons   = solver.optimize('u', usqr, droptol=1e-15, arguments={'h0':[h0], 'R0':R0})
+    ucons   = solver.optimize('u', usqr, droptol=1e-15, arguments={'hpicard':h0, 'Rpicard':R0})
     upicard = numpy.zeros_like(ucons)
+    Rpicard = R0
+    hpicard = h0
 
     ns.π        = numpy.pi
     ns.F        = F
-    ns.h0       = h0
     ns.λ        = l
     ns.ν        = nu
     ns.μinf     = muinf
@@ -115,8 +116,8 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     sample = ζdomain.sample('gauss',2*uzdegree)*ρdomain.sample('gauss',2*urdegree)
 
     ures = sample.integral('((ubasis_n r)_,1 τ - (ubasis_n r)_,0 p) d:x' @ ns)
-    pres = sample.integral('pbasis_n (-(u r)_,0 - r (δh / h0)) d:x' @ ns)
-    hres = domain.boundary['top'].integral('hbasis_n ((F / (?R0^2)) - π p) r d:x' @ ns, degree=2*urdegree)
+    pres = sample.integral('pbasis_n (-(u r)_,0 - r (δh / ?hpicard)) d:x' @ ns)
+    hres = domain.boundary['top'].integral('hbasis_n ((F / (?Rpicard^2)) - π p) r d:x' @ ns, degree=2*urdegree)
 
     Δtsteps = numpy.power(ratio**(1/(nt-1)),range(nt))
     Δtsteps = (T/Δtsteps.sum())*Δtsteps
@@ -127,24 +128,26 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
 
             with treelog.iter.plain('picard',range(npicard)) as iterations:
                 for iteration in iterations:
-                    args = dict(upicard=upicard,h0=[h0],R0=R0,Δt=Δt,t=Δtsteps[:step+1].sum())
+                    args = dict(upicard=upicard,h0=[h0],hpicard=hpicard,Rpicard=Rpicard,Δt=Δt,t=Δtsteps[:step+1].sum())
                     state = solver.solve_linear(('u', 'p', 'h'), (ures, pres, hres), constrain=dict(u=ucons), arguments=args)
                     state.update(args)
+                    state['R'] = numpy.sqrt(hpicard/state['h'][0])*Rpicard
 
                     area, μerror= domain.integrate(['r d:x', '(μeff - μinf - (μ0 - μinf) (1 + (λ δγ)^2)^((ν - 1) / 2))^2 r d:x'] @ ns, arguments=state, degree=2*uzdegree)
                     μerror = numpy.sqrt(μerror)/(mu0*area)
+                    Rerror = abs(Rpicard-state['R'])/Rpicard
 
                     treelog.user('viscosiy error = {}'.format(μerror))
+                    treelog.user('radius error = {}'.format(Rerror))
 
                     upicard = state['u']
+                    hpicard = state['h'][0]
+                    Rpicard = state['R']
 
-                    if μerror < tol:
+                    if μerror < tol and Rerror < tol:
                         break
                 else:
                     raise RuntimeError('Picard solver did not converge in {} iterations'.format(npicard))  
-
-            #update the radius
-            state['R'] = numpy.sqrt(state['h0'][0]/state['h'][0])*R0
 
             # plot the results
             pp.plot(state)
@@ -211,7 +214,6 @@ class PostProcessing:
         t_ana = numpy.linspace(0,self.df['t'].max(),100)
         h0 = self.df['h'][0]
         R0 = self.df['R'][0]
-
 
         F  = ns.F.eval()
         μ0 = ns.μ0.eval()
