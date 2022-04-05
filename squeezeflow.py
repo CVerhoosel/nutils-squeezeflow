@@ -1,10 +1,10 @@
-from nutils import cli, mesh, function, solver, export, types
+from nutils import cli, mesh, function, solver, export, types, testing
 import numpy, treelog, typing, pandas
 
 unit = types.unit(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min')
 _ = numpy.newaxis
 
-def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m'], h0:unit['m'], F:unit['g'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int):
+def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m'], h0:unit['m'], F:unit['N'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int, plotnewtonian:bool):
 
     '''
     Radial squeeze flow of a Carreau fluid
@@ -20,16 +20,16 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
        l [0.005s]
          Relaxation time
 
-       nu [2]
+       nu [2.]
          Power index
-       
+
        R0 [2cm]
          Initial radius of fluid domain
 
        h0 [1mm]
          Initial height of fluid domain
 
-       F [1.0kg]
+       F [1N]
          Loading
 
        T [30s]
@@ -56,16 +56,32 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
        uzdegree [6]
          Velocity order in thickness direction
 
+       plotnewtonian [False]
+         Flag to plot the Newtoian reference solution
+
     .. presets::
 
        newtonian
-         nu=1
+         nu=1.
          l=0s
-         mu0=1.4Pa*s
-         muinf=1.4Pa*s
+         mu0=1Pa*s
+         muinf=1Pa*s
+         plotnewtonian=True
+
+       experiment
+         nu=1.
+         l=0s
+         mu0=0.9Pa*s
+         muinf=0.9Pa*s
+         F=4.905N
+         R0=4.53mm
+         h0=1.55mm
+         nt=10
+         T=7.5min
 
  '''
- 
+
+    assert uzdegree > 1
     pdegree  = urdegree-1
 
     ρdomain, ρgeom = mesh.line(numpy.linspace(0, 1, m+1), bnames=('inner','outer'), space='R')
@@ -74,16 +90,13 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
     domain = ρdomain*ζdomain
 
     ns = function.Namespace()
-    pp = PostProcessing(ρdomain, ζdomain, ns, h0, R0)
+    pp = PostProcessing(ρdomain, ζdomain, ns, h0, R0, plotnewtonian)
 
-    ns.hbasis = [1.]
-    ns.h  = function.dotarg('h' ,ns.hbasis)
-    ns.h0 = function.dotarg('h0',ns.hbasis)
-    ns.δh = '(h - h0) / ?Δt'
+    ns.δh = '(?h - ?h0) / ?Δt'
     ns.ρ  = ρgeom
     ns.ζ  = ζgeom
     ns.r  = 'ρ ?Rpicard'
-    ns.z  = '?hpicard ζ'
+    ns.z  = 'ζ ?hpicard'
     ns.x  = function.stack([ns.r,ns.z])
 
     urbasis = ρdomain.basis('std', degree=urdegree)
@@ -117,7 +130,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
 
     ures = sample.integral('((ubasis_n r)_,1 τ - (ubasis_n r)_,0 p) d:x' @ ns)
     pres = sample.integral('pbasis_n (-(u r)_,0 - r (δh / ?hpicard)) d:x' @ ns)
-    hres = domain.boundary['top'].integral('hbasis_n ((F / (?Rpicard^2)) - π p) r d:x' @ ns, degree=2*urdegree)
+    hres = domain.boundary['top'].integral('((F / (?Rpicard^2)) - π p) r d:x' @ ns, degree=2*urdegree)
 
     Δtsteps = numpy.power(ratio**(1/(nt-1)),range(nt))
     Δtsteps = (T/Δtsteps.sum())*Δtsteps
@@ -128,43 +141,46 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:int, R0:unit['m']
 
             with treelog.iter.plain('picard',range(npicard)) as iterations:
                 for iteration in iterations:
-                    args = dict(upicard=upicard,h0=[h0],hpicard=hpicard,Rpicard=Rpicard,Δt=Δt,t=Δtsteps[:step+1].sum())
+                    args = dict(upicard=upicard,h0=h0,hpicard=hpicard,Rpicard=Rpicard,Δt=Δt,t=Δtsteps[:step+1].sum())
                     state = solver.solve_linear(('u', 'p', 'h'), (ures, pres, hres), constrain=dict(u=ucons), arguments=args)
                     state.update(args)
-                    state['R'] = numpy.sqrt(hpicard/state['h'][0])*Rpicard
+                    state['R'] = numpy.sqrt(hpicard/state['h'])*Rpicard
 
-                    area, μerror= domain.integrate(['r d:x', '(μeff - μinf - (μ0 - μinf) (1 + (λ δγ)^2)^((ν - 1) / 2))^2 r d:x'] @ ns, arguments=state, degree=2*uzdegree)
-                    μerror = numpy.sqrt(μerror)/(mu0*area)
+                    area, μerror= domain.integrate(['r d:x', '((μeff - μinf - (μ0 - μinf) (1 + (λ δγ)^2)^((ν - 1) / 2)) / μ0)^2 r d:x'] @ ns, arguments=state, degree=2*uzdegree)
+                    μerror = numpy.sqrt(μerror/area)
                     Rerror = abs(Rpicard-state['R'])/Rpicard
 
-                    treelog.user('viscosiy error = {}'.format(μerror))
-                    treelog.user('radius error = {}'.format(Rerror))
+                    treelog.user(f'viscosiy error = {μerror:4.3e}')
+                    treelog.user(f'radius error = {Rerror:4.3e}')
 
                     upicard = state['u']
-                    hpicard = state['h'][0]
+                    hpicard = state['h']
                     Rpicard = state['R']
 
                     if μerror < tol and Rerror < tol:
                         break
                 else:
-                    raise RuntimeError('Picard solver did not converge in {} iterations'.format(npicard))  
+                    raise RuntimeError(f'Picard solver did not converge in {npicard} iterations')
 
             # plot the results
             pp.plot(state)
 
             # set initial values for th next step
-            R0 = state['R']
-            h0 = state['h'][0]
+            h0 = state['h']
+
+    # return the time series data frame
+    return pp.df
 
 class PostProcessing:
 
-    def __init__(self, ρdomain, ζdomain, ns, h0, R0, npointsρ=6, npointsζ=20):
+    def __init__(self, ρdomain, ζdomain, ns, h0, R0, plotnewtonian, npointsρ=6, npointsζ=20):
         self.interior   = ρdomain.sample('bezier', npointsρ)*ζdomain.sample('bezier', npointsζ)
         self.centerline = ζdomain.sample('uniform',1)*ρdomain.sample('bezier',npointsρ)
         self.profile    = ρdomain.sample('uniform',1)*ζdomain.sample('bezier',npointsζ)
         self.npointsζ   = npointsζ
         self.ns         = ns
         self.df         = pandas.DataFrame({'t':[0.], 'h':[h0], 'R':[R0]})
+        self.plotana    = plotnewtonian
 
     def plot(self, state):
 
@@ -196,9 +212,12 @@ class PostProcessing:
           ax[0].plot(r, u, label='FE')
           ax[0].set_ylabel('u')
           ax[0].legend()
+          ax[0].grid()
           ax[1].plot(r, p, label='FE')
           ax[1].set_ylabel('p')
+          ax[1].set_xlabel('r')
           ax[1].legend()
+          ax[1].grid()
 
         # profile plot
         z, u, p = self.profile.eval(['z', 'u', 'p'] @ ns, **state)
@@ -209,7 +228,7 @@ class PostProcessing:
           ax[1].plot(p.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
 
         # time plots
-        self.df = self.df.append({'t':state['t'], 'h':state['h'][0], 'R':state['R']}, ignore_index=True)
+        self.df = self.df.append({'t':state['t'], 'h':state['h'], 'R':state['R']}, ignore_index=True)
 
         t_ana = numpy.linspace(0,self.df['t'].max(),100)
         h0 = self.df['h'][0]
@@ -223,7 +242,8 @@ class PostProcessing:
         with export.mplfigure('radius.png') as fig:
             ax = fig.subplots(1,1)
             ax.plot(self.df['t'], self.df['R'], '.-', label='FE')
-            ax.plot(t_ana, R_ana, ':', label='analytical (Newtonian)')
+            if self.plotana:
+                ax.plot(t_ana, R_ana, ':', label='analytical (Newtonian)')
             ax.set_xlabel('t')
             ax.set_ylabel('R')
             ax.grid()
@@ -232,10 +252,25 @@ class PostProcessing:
         with export.mplfigure('height.png') as fig:
             ax = fig.subplots(1,1)
             ax.plot(self.df['t'], self.df['h'], '.-', label='FE')
-            ax.plot(t_ana, h_ana, ':', label='analytical (Newtonian)')
+            if self.plotana:
+                ax.plot(t_ana, h_ana, ':', label='analytical (Newtonian)')
             ax.set_xlabel('t')
             ax.set_ylabel('h')
             ax.grid()
             ax.legend()
 
-cli.run(main)
+        # save data frame to file
+        with treelog.userfile('timeseries.csv', 'w') as f:
+            self.df.to_csv(f, index=False)
+
+if __name__ == '__main__':
+    cli.run(main)
+
+# Testing
+class test(testing.TestCase):
+
+    @testing.requires('matplotlib')
+    def test_newtonian(self):
+        df = main(muinf=unit('1Pa*s'), mu0=unit('1Pa*s'), l=unit('0s'), nu=1., R0=unit('2cm'), h0=unit('1mm'), F=unit('1N'), T=unit('30s'), m=2, urdegree=3, uzdegree=2, npicard=5, tol=1e-3, nt=40, ratio=100, plotnewtonian=True)
+        with self.subTest('radius'):
+            self.assertAlmostEqual(df['R'].values[-1], 0.037395942122931285, places=6)
