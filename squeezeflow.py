@@ -35,7 +35,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
        T [30s]
          Final time
 
-       m [20]
+       m [16]
          Number of (radial) elements
 
        ratio [100]
@@ -44,7 +44,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
        nt [40]
          Number of time steps
 
-       npicard [50]
+       npicard [1000]
          Number of Picard iterations
 
        tol [0.001]
@@ -53,7 +53,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
        urdegree [3]
          Velocity order in radial direction
 
-       uzdegree [6]
+       uzdegree [10]
          Velocity order in thickness direction
 
        plotnewtonian [False]
@@ -68,16 +68,29 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
          muinf=1Pa*s
          plotnewtonian=True
 
+       carreau
+         nu=0.05
+         muinf=0Pa*s
+         mu0=200Pa*s
+         l=0.2s
+         F=5.0N
+         R0=1.0cm
+         h0=0.5mm
+         plotnewtonian=True
+         uzdegree=10
+         T=5s
+
        experiment
-         nu=1.
-         l=0s
-         mu0=0.9Pa*s
-         muinf=0.9Pa*s
-         F=4.905N
-         R0=4.53mm
-         h0=1.55mm
-         nt=10
-         T=7.5min
+         nu=0.043
+         l=0.2s
+         mu0=10Pa*s
+         muinf=0.001Pa*s
+         F=5.690N
+         R0=10.6mm
+         h0=0.45mm
+         nt=500
+         T=600s
+         ratio=1000000
 
  '''
 
@@ -122,8 +135,9 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
     ns.μinf     = muinf
     ns.μ0       = mu0
     ns.δγ       = 'u_,1'
-    ns.δγpicard = 'upicard_,1'
-    ns.μeff     = 'μinf + (μ0 - μinf) (1 + (λ δγpicard)^2)^((ν - 1) / 2)'
+    ns.δΓ       = 'sqrt(2 (u_,0)^2 + (u_,1)^2)' 
+    ns.δΓpicard = 'sqrt(2 (upicard_,0)^2 + (upicard_,1)^2)' 
+    ns.μeff     = 'μinf + (μ0 - μinf) (1 + (λ δΓpicard)^2)^((ν - 1) / 2)'
     ns.τ        = 'μeff δγ'
 
     sample = ζdomain.sample('gauss',2*uzdegree)*ρdomain.sample('gauss',2*urdegree)
@@ -134,6 +148,8 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
 
     Δtsteps = numpy.power(ratio**(1/(nt-1)),range(nt))
     Δtsteps = (T/Δtsteps.sum())*Δtsteps
+    treelog.user(f'Min Δt: {numpy.min(Δtsteps):4.2e}s')
+    treelog.user(f'Max Δt: {numpy.max(Δtsteps):4.2e}s')
     with treelog.iter.plain('timestep',range(nt)) as steps:
         for step in steps:
 
@@ -146,7 +162,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
                     state.update(args)
                     state['R'] = numpy.sqrt(hpicard/state['h'])*Rpicard
 
-                    area, μerror= domain.integrate(['r d:x', '((μeff - μinf - (μ0 - μinf) (1 + (λ δγ)^2)^((ν - 1) / 2)) / μ0)^2 r d:x'] @ ns, arguments=state, degree=2*uzdegree)
+                    area, μerror= domain.integrate(['r d:x', '((μeff - μinf - (μ0 - μinf) (1 + (λ δΓ)^2)^((ν - 1) / 2)) / μ0)^2 r d:x'] @ ns, arguments=state, degree=2*uzdegree)
                     μerror = numpy.sqrt(μerror/area)
                     Rerror = abs(Rpicard-state['R'])/Rpicard
 
@@ -187,12 +203,26 @@ class PostProcessing:
         ns = self.ns.copy_() # copy namespace so that we don't modify the calling argument
 
         # field plots
-        x, μeff, u, p = self.interior.eval(['x_i', 'μeff', 'u', 'p'] @ ns, **state)
+        x, μeff, u, p, δΓ = self.interior.eval(['x_i', 'μeff', 'u', 'p', 'δΓ'] @ ns, **state)
+
+        with export.mplfigure('shearrate.png') as fig:
+          ax = fig.subplots(1,1)
+          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, δΓ, shading='gouraud', cmap='jet')
+          fig.colorbar(im)
 
         with export.mplfigure('viscosity.png') as fig:
           ax = fig.subplots(1,1)
           im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, μeff, shading='gouraud', cmap='jet')
+          im.set_clim(ns.μinf.eval(),ns.μ0.eval())
           fig.colorbar(im)
+
+        with export.mplfigure('carreau.png') as fig:
+          ax = fig.subplots(1,1)
+          im = ax.loglog(δΓ, μeff, '.', alpha=0.1)
+          ax.set_xlabel(r'$\dot{\gamma}$')
+          ax.set_ylabel(r'$\mu_{eff}$')
+          ax.set_ylim(ns.μinf.eval(),ns.μ0.eval())
+          ax.grid()
 
         with export.mplfigure('velocity.png') as fig:
           ax = fig.subplots(1,1)
