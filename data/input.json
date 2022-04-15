@@ -1,0 +1,26 @@
+{
+	"name": "input.csv",
+	"header": [
+		["ID", null],
+		["F", "N"],
+		["R0", "m"],
+		["V", "m3"],
+		["mu0", "Pa*s"],
+		["nu", null],
+		["l", "s"]
+	],
+	"defaults": [
+		["muinf", "0.001", "Pa*s"],
+		["nt", 500, null],
+		["T", "600", "s"],
+		["ratio", 100000000, null],
+		["m", 16, null],
+		["h0", null, null],
+		["npicard", 1000, null],
+		["tol", 0.001, null],
+		["urdegree", 3, null],
+		["uzdegree", 10, null],
+		["plotting", false, null],
+		["plotnewtonian", false, null]
+	]
+}

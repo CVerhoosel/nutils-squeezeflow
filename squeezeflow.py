@@ -1,10 +1,10 @@
 from nutils import cli, mesh, function, solver, export, types, testing
 import numpy, treelog, typing, pandas
 
-unit = types.unit(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min')
+unit = types.unit(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min', L='0.001m3')
 _ = numpy.newaxis
 
-def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m'], h0:unit['m'], F:unit['N'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int, plotnewtonian:bool):
+def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, V:typing.Optional[unit['L']], R0:unit['m'], h0:typing.Optional[unit['m']], F:unit['N'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int, plotting:bool, plotnewtonian:bool):
 
     '''
     Radial squeeze flow of a Carreau fluid
@@ -28,6 +28,9 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
 
        h0 [1mm]
          Initial height of fluid domain
+
+       V [None]
+         Fluid volume
 
        F [1N]
          Loading
@@ -55,6 +58,9 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
 
        uzdegree [10]
          Velocity order in thickness direction
+
+       plotting [True]
+         Flag to enable plotting
 
        plotnewtonian [False]
          Flag to plot the Newtoian reference solution
@@ -90,12 +96,16 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
          h0=0.45mm
          nt=500
          T=600s
-         ratio=1000000
+         ratio=10000000
 
  '''
 
     assert uzdegree > 1
     pdegree  = urdegree-1
+
+    if not h0:
+        assert V is not None, 'Either the volume or the initial height must be specified'
+        h0 = V/(numpy.pi*R0**2)
 
     ρdomain, ρgeom = mesh.line(numpy.linspace(0, 1, m+1), bnames=('inner','outer'), space='R')
     ζdomain, ζgeom = mesh.line(numpy.linspace(-1/2, 1/2, 2), bnames=('bottom','top'), space='H')
@@ -179,7 +189,9 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, R0:unit['m
                     raise RuntimeError(f'Picard solver did not converge in {npicard} iterations')
 
             # plot the results
-            pp.plot(state)
+            pp.append_timeseries(state)
+            if plotting:
+                pp.plot(state)
 
             # set initial values for th next step
             h0 = state['h']
@@ -197,6 +209,9 @@ class PostProcessing:
         self.ns         = ns
         self.df         = pandas.DataFrame({'t':[0.], 'h':[h0], 'R':[R0]})
         self.plotana    = plotnewtonian
+
+    def append_timeseries(self, state):
+        self.df = self.df.append({'t':state['t'], 'h':state['h'], 'R':state['R']}, ignore_index=True)
 
     def plot(self, state):
 
@@ -258,8 +273,6 @@ class PostProcessing:
           ax[1].plot(p.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
 
         # time plots
-        self.df = self.df.append({'t':state['t'], 'h':state['h'], 'R':state['R']}, ignore_index=True)
-
         t_ana = numpy.linspace(0,self.df['t'].max(),100)
         h0 = self.df['h'][0]
         R0 = self.df['R'][0]
