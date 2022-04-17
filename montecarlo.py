@@ -82,7 +82,7 @@ def inspect(fname='data/input.json',
 
     with export.mplfigure('radius.png') as fig:
         ax = fig.subplots(1,1)
-        ax.plot(data[:,:,0].T, data[:,:,-1].T, 'r', alpha=0.3)
+        ax.plot(data[:,:,0].T, data[:,:,-1].T, 'r', alpha=0.1)
         ax.errorbar(exp[:,0], exp[:,1], exp[:,2], fmt='g.', ecolor='g', label='exp')
         ax.plot(μ[:,0], μ[:,-1], 'b', label='μ')
         ax.plot(μ[:,0], numpy.array([μ[:,-1]+σ[:,-1], μ[:,-1]-σ[:,-1]]).T, 'b--', label='μ±σ')
@@ -91,6 +91,22 @@ def inspect(fname='data/input.json',
         ax.set_title(f'N = {N}')
         ax.grid()
         ax.legend()
+
+    # trace plot
+    rng = numpy.arange(5,N)
+    μs = numpy.array([numpy.mean(data[:i,-1,-1], axis=0) for i in rng])
+    σs = numpy.array([numpy.std(data[:i,-1,-1], axis=0) for i in rng])
+
+
+    with export.mplfigure('trace.png') as fig:
+        (ax1, ax2) = fig.subplots(2,1,sharex=True)
+        ax1.plot(rng, μs, 'b', label='μ')
+        ax1.set_ylabel('μ')
+        ax1.grid()
+        ax2.plot(rng, σs, 'b', label='σ')
+        ax2.set_xlabel('N')
+        ax2.set_ylabel('σ')
+        ax2.grid()
 
 def load_input(fname):
 
