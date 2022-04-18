@@ -1,7 +1,7 @@
-from nutils import cli, mesh, function, solver, export, types, testing
+from nutils import cli, mesh, function, solver, export, unit, testing
 import numpy, treelog, typing, pandas
 
-unit = types.unit(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min', L='0.001m3')
+unit = unit.create(m=1, s=1, g=1e-3, K=1, N='kg*m/s2', Pa='N/m2', J='N*m', W='J/s', bar='0.1MPa', min='60s', hr='60min', L='0.001m3')
 _ = numpy.newaxis
 
 def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, V:typing.Optional[unit['L']], R0:unit['m'], h0:typing.Optional[unit['m']], F:unit['N'], T:unit['s'], m:int, urdegree:int, uzdegree:int, npicard:int, tol:float, nt:int, ratio:int, plotting:bool, plotnewtonian:bool):
@@ -29,7 +29,7 @@ def main(muinf:unit['Pa*s'], mu0:unit['Pa*s'], l:unit['s'], nu:float, V:typing.O
        h0 [1mm]
          Initial height of fluid domain
 
-       V [None]
+       V []
          Fluid volume
 
        F [1N]
@@ -207,6 +207,8 @@ class PostProcessing:
         self.profile    = ρdomain.sample('uniform',1)*ζdomain.sample('bezier',npointsζ)
         self.npointsζ   = npointsζ
         self.ns         = ns
+        self.R0         = R0
+        self.h0         = h0
         self.df         = pandas.DataFrame({'t':[0.], 'h':[h0], 'R':[R0]})
         self.plotana    = plotnewtonian
 
@@ -222,46 +224,53 @@ class PostProcessing:
 
         with export.mplfigure('shearrate.png') as fig:
           ax = fig.subplots(1,1)
-          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, δΓ, shading='gouraud', cmap='jet')
-          fig.colorbar(im)
+          im = ax.tripcolor(x[:,0]/self.R0, x[:,1]/self.h0, self.interior.tri, δΓ, shading='gouraud', cmap='jet')
+          ax.set_xlabel(r'$r/R_0$')
+          ax.set_ylabel(r'$y/H_0$')
+          fig.colorbar(im, label=r'$\dot{\gamma}~{\rm [s^{-1}]}$')
 
         with export.mplfigure('viscosity.png') as fig:
           ax = fig.subplots(1,1)
-          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, μeff, shading='gouraud', cmap='jet')
+          im = ax.tripcolor(x[:,0]/self.R0, x[:,1]/self.h0, self.interior.tri, μeff, shading='gouraud', cmap='jet')
           im.set_clim(ns.μinf.eval(),ns.μ0.eval())
-          fig.colorbar(im)
+          ax.set_xlabel(r'$r/R_0$')
+          ax.set_ylabel(r'$y/H_0$')
+          fig.colorbar(im, label=r'$\mu~{\rm [Pa\,s]}$')
 
         with export.mplfigure('carreau.png') as fig:
           ax = fig.subplots(1,1)
           im = ax.loglog(δΓ, μeff, '.', alpha=0.1)
-          ax.set_xlabel(r'$\dot{\gamma}$')
-          ax.set_ylabel(r'$\mu_{eff}$')
+          ax.set_xlabel(r'$\dot{\gamma}~{\rm [s^{-1}]}$')
+          ax.set_ylabel(r'$\mu~{\rm [Pa\,s]}$')
           ax.set_ylim(ns.μinf.eval(),ns.μ0.eval())
           ax.grid()
+          ax.set_ylim(0,1.1*numpy.max(μeff))
 
         with export.mplfigure('velocity.png') as fig:
           ax = fig.subplots(1,1)
-          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, u, shading='gouraud', cmap='jet')
-          fig.colorbar(im)
+          im = ax.tripcolor(x[:,0]/self.R0, x[:,1]/self.h0, self.interior.tri, u, shading='gouraud', cmap='jet')
+          ax.set_xlabel(r'$r/R_0$')
+          ax.set_ylabel(r'$y/H_0$')
+          fig.colorbar(im, label=r'$v_r~{\rm [m/s]}$')
 
         with export.mplfigure('pressure.png') as fig:
           ax = fig.subplots(1,1)
-          im = ax.tripcolor(x[:,0], x[:,1], self.interior.tri, p, shading='gouraud', cmap='jet')
-          fig.colorbar(im)
+          im = ax.tripcolor(x[:,0]/self.R0, x[:,1]/self.h0, self.interior.tri, p, shading='gouraud', cmap='jet')
+          ax.set_xlabel(r'$r/R_0$')
+          ax.set_ylabel(r'$y/H_0$')
+          fig.colorbar(im, label=r'$p~{\rm [Pa]}$')
 
         # centerline plot
         r, u, p = self.centerline.eval(['r', 'u', 'p'] @ ns, **state)
 
         with export.mplfigure('centerline.png') as fig:
-          ax = fig.subplots(2,1)
-          ax[0].plot(r, u, label='FE')
-          ax[0].set_ylabel('u')
-          ax[0].legend()
+          ax = fig.subplots(2,1,sharex=True)
+          ax[0].plot(r/self.R0, u)
+          ax[0].set_ylabel(r'$v_r~{\rm [m/s]}$')
           ax[0].grid()
-          ax[1].plot(r, p, label='FE')
-          ax[1].set_ylabel('p')
-          ax[1].set_xlabel('r')
-          ax[1].legend()
+          ax[1].plot(r/self.R0, p)
+          ax[1].set_ylabel(r'$p~{\rm [Pa]}$')
+          ax[1].set_xlabel(r'$r/R_0$')
           ax[1].grid()
 
         # profile plot
@@ -269,8 +278,14 @@ class PostProcessing:
 
         with export.mplfigure('profiles.png') as fig:
           ax = fig.subplots(2,1)
-          ax[0].plot(u.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
-          ax[1].plot(p.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T)
+          ax[0].plot(u.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T/self.h0)
+          ax[0].set_ylabel(r'$y/H_0$')
+          ax[0].set_xlabel(r'$v_r~{\rm [m/s]}$')
+          ax[0].grid()
+          ax[1].plot(p.reshape(-1,self.npointsζ).T, z.reshape(-1,self.npointsζ).T/self.h0)
+          ax[1].set_ylabel(r'$y/H_0$')
+          ax[1].set_xlabel(r'$p~{\rm [Pa]}$')
+          ax[1].grid()
 
         # time plots
         t_ana = numpy.linspace(0,self.df['t'].max(),100)
@@ -284,21 +299,21 @@ class PostProcessing:
 
         with export.mplfigure('radius.png') as fig:
             ax = fig.subplots(1,1)
-            ax.plot(self.df['t'], self.df['R'], '.-', label='FE')
+            ax.plot(self.df['t'], self.df['R']/self.R0, '.-', label='FE')
             if self.plotana:
-                ax.plot(t_ana, R_ana, ':', label='analytical (Newtonian)')
-            ax.set_xlabel('t')
-            ax.set_ylabel('R')
+                ax.plot(t_ana, R_ana/self.R0, ':', label='analytical (Newtonian)')
+            ax.set_xlabel(r'$t~{\rm [s]}$')
+            ax.set_ylabel(r'$R/R_0$')
             ax.grid()
             ax.legend()
 
         with export.mplfigure('height.png') as fig:
             ax = fig.subplots(1,1)
-            ax.plot(self.df['t'], self.df['h'], '.-', label='FE')
+            ax.plot(self.df['t'], self.df['h']/self.h0, '.-', label='FE')
             if self.plotana:
-                ax.plot(t_ana, h_ana, ':', label='analytical (Newtonian)')
-            ax.set_xlabel('t')
-            ax.set_ylabel('h')
+                ax.plot(t_ana, h_ana/self.h0, ':', label='analytical (Newtonian)')
+            ax.set_xlabel(r'$t~{\rm [s]}$')
+            ax.set_ylabel(r'$H/H_0$')
             ax.grid()
             ax.legend()
 
@@ -314,6 +329,6 @@ class test(testing.TestCase):
 
     @testing.requires('matplotlib')
     def test_newtonian(self):
-        df = main(muinf=unit('1Pa*s'), mu0=unit('1Pa*s'), l=unit('0s'), nu=1., R0=unit('2cm'), h0=unit('1mm'), F=unit('1N'), T=unit('30s'), m=2, urdegree=3, uzdegree=2, npicard=5, tol=1e-3, nt=40, ratio=100, plotnewtonian=True)
+        df = main(muinf=unit('1Pa*s'), mu0=unit('1Pa*s'), l=unit('0s'), nu=1., R0=unit('2cm'), h0=unit('1mm'), F=unit('1N'), T=unit('30s'), m=2, urdegree=3, uzdegree=2, npicard=5, tol=1e-3, nt=40, ratio=100, plotnewtonian=True, plotting=False, V=None)
         with self.subTest('radius'):
             self.assertAlmostEqual(df['R'].values[-1], 0.037395942122931285, places=6)
